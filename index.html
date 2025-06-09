@@ -1,0 +1,571 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SightIQ - AI Object Detection</title>
+    
+    <!-- TensorFlow.js Core -->
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.11.0/dist/tf.min.js"></script>
+    
+    <!-- TensorFlow.js Backend WebGL -->
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-backend-webgl@3.11.0/dist/tf-backend-webgl.min.js"></script>
+    
+    <!-- COCO-SSD Model -->
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.2/dist/coco-ssd.min.js"></script>
+    
+    <!-- TailwindCSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- SF Pro Font -->
+    <link rel="stylesheet" href="https://fonts.cdnfonts.com/css/sf-pro-display">
+    
+    <style>
+        /* Apple-style animations */
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        @keyframes spin {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
+        .loading-spinner { animation: spin 1s linear infinite; }
+        .loading-pulse { animation: pulse 2s ease-in-out infinite; }
+        
+        /* Apple-style glassmorphism */
+        .apple-glass {
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.1);
+        }
+        
+        /* Apple-style buttons */
+        .apple-button {
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.1);
+            transition: all 0.3s ease;
+        }
+        .apple-button:hover {
+            background: rgba(255, 255, 255, 0.2);
+            transform: scale(1.02);
+        }
+        
+        /* Smooth bounding box animations */
+        .detection-box {
+            transition: all 0.1s ease-out;
+            border: 2px solid;
+            border-radius: 12px;
+            backdrop-filter: blur(4px);
+        }
+        
+        /* Category colors with Apple-style opacity */
+        .category-person { border-color: #007AFF; background-color: rgba(0, 122, 255, 0.2); }
+        .category-car { border-color: #FF3B30; background-color: rgba(255, 59, 48, 0.2); }
+        .category-shoe { border-color: #34C759; background-color: rgba(52, 199, 89, 0.2); }
+        .category-electronics { border-color: #AF52DE; background-color: rgba(175, 82, 222, 0.2); }
+        
+        /* Responsive video container */
+        .video-container {
+            position: relative;
+            width: 100%;
+            height: 100vh;
+            overflow: hidden;
+        }
+        
+        .detection-canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+        }
+
+        /* Apple-style typography */
+        body {
+            font-family: 'SF Pro Display', -apple-system, BlinkMacSystemFont, sans-serif;
+        }
+
+        /* Apple-style toast */
+        .apple-toast {
+            background: rgba(0, 0, 0, 0.8);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border-radius: 14px;
+            padding: 12px 20px;
+            font-size: 14px;
+            font-weight: 500;
+        }
+    </style>
+</head>
+<body class="bg-black text-white overflow-hidden">
+    <!-- Main App Container -->
+    <div id="app-container" class="relative w-full h-screen">
+        <!-- Video Background -->
+        <div class="video-container">
+            <video id="webcam" class="w-full h-full object-cover" autoplay muted playsinline></video>
+            <canvas id="detection-canvas" class="detection-canvas"></canvas>
+        </div>
+
+        <!-- UI Overlay -->
+        <div class="absolute top-4 left-4 z-10">
+            <div class="apple-glass rounded-2xl p-4">
+                <h1 class="text-xl font-semibold text-white mb-2">SightIQ AI</h1>
+                <div class="flex items-center space-x-2 text-sm text-gray-300">
+                    <div class="w-2 h-2 bg-green-500 rounded-full loading-pulse"></div>
+                    <span>Live Detection</span>
+                </div>
+                <div id="fps-counter" class="text-xs text-gray-400 mt-1">FPS: --</div>
+            </div>
+        </div>
+
+        <!-- Camera Switch Button -->
+        <div class="absolute top-4 right-4 z-10">
+            <button 
+                id="switch-camera-btn" 
+                onclick="switchCamera()"
+                class="apple-button text-white font-medium py-2 px-4 rounded-full flex items-center space-x-2"
+            >
+                <span>📷</span>
+                <span id="camera-mode">Front Camera</span>
+            </button>
+        </div>
+
+        <!-- Share Button -->
+        <div class="absolute bottom-6 left-1/2 transform -translate-x-1/2 z-10">
+            <button 
+                id="share-btn" 
+                onclick="shareDetections()"
+                class="apple-button text-white font-medium py-3 px-6 rounded-full flex items-center space-x-2"
+            >
+                <span>📤</span>
+                <span>Share My Detections</span>
+            </button>
+        </div>
+
+        <!-- Toast Notification -->
+        <div id="toast" class="fixed top-4 right-4 apple-toast z-50 hidden transform transition-all duration-300">
+            Copied to clipboard!
+        </div>
+
+        <!-- Error Modal -->
+        <div id="error-modal" class="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50 hidden">
+            <div class="apple-glass p-6 rounded-2xl max-w-md">
+                <h3 class="text-lg font-semibold mb-4">Camera Access Required</h3>
+                <p class="mb-4 text-gray-300">Please allow camera access to use SightIQ AI detection.</p>
+                <button onclick="location.reload()" class="apple-button text-white px-4 py-2 rounded-full">
+                    Try Again
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Global variables and configuration
+        let model = null;
+        let video = null;
+        let canvas = null;
+        let ctx = null;
+        let detections = [];
+        let animationId = null;
+        let lastFrameTime = 0;
+        let fps = 0;
+        let currentFacingMode = 'user';
+        let stream = null;
+
+        // YOLO class names for COCO dataset (80 classes)
+        const COCO_CLASSES = [
+            'person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train', 'truck',
+            'boat', 'traffic light', 'fire hydrant', 'stop sign', 'parking meter', 'bench',
+            'bird', 'cat', 'dog', 'horse', 'sheep', 'cow', 'elephant', 'bear', 'zebra',
+            'giraffe', 'backpack', 'umbrella', 'handbag', 'tie', 'suitcase', 'frisbee',
+            'skis', 'snowboard', 'sports ball', 'kite', 'baseball bat', 'baseball glove',
+            'skateboard', 'surfboard', 'tennis racket', 'bottle', 'wine glass', 'cup',
+            'fork', 'knife', 'spoon', 'bowl', 'banana', 'apple', 'sandwich', 'orange',
+            'broccoli', 'carrot', 'hot dog', 'pizza', 'donut', 'cake', 'chair', 'couch',
+            'potted plant', 'bed', 'dining table', 'toilet', 'tv', 'laptop', 'mouse',
+            'remote', 'keyboard', 'cell phone', 'microwave', 'oven', 'toaster', 'sink',
+            'refrigerator', 'book', 'clock', 'vase', 'scissors', 'teddy bear', 'hair drier',
+            'toothbrush'
+        ];
+
+        // Category mapping for color coding
+        const CATEGORY_MAPPING = {
+            'person': 'person',
+            'car': 'car', 'truck': 'car', 'bus': 'car', 'motorcycle': 'car',
+            'sneakers': 'shoe', 'boot': 'shoe', 'sandal': 'shoe',
+            'laptop': 'electronics', 'cell phone': 'electronics', 'tv': 'electronics',
+            'glasses': 'accessories', 'watch': 'accessories', 'hat': 'accessories',
+            'bottle': 'container', 'book': 'container'
+        };
+
+        // Brand and price database
+        const PRODUCT_DATABASE = {
+            'laptop': { 
+                brands: ['Apple', 'Dell', 'HP', 'Lenovo'], 
+                priceRange: [299, 2999],
+                description: 'High-performance computing device'
+            },
+            'cell phone': { 
+                brands: ['Apple', 'Samsung', 'Google', 'OnePlus'], 
+                priceRange: [199, 1199],
+                description: 'Smart mobile device'
+            },
+            'car': { 
+                brands: ['Toyota', 'Honda', 'BMW', 'Tesla'], 
+                priceRange: [20000, 80000],
+                description: 'Personal transportation vehicle'
+            },
+            'person': { 
+                brands: ['Human'], 
+                priceRange: [0, 0],
+                description: 'Human being'
+            },
+            'glasses': {
+                brands: ['Ray-Ban', 'Oakley', 'Warby Parker', 'Tom Ford'],
+                priceRange: [99, 499],
+                description: 'Vision correction and style accessory'
+            },
+            'watch': {
+                brands: ['Apple', 'Rolex', 'Omega', 'Tag Heuer'],
+                priceRange: [199, 9999],
+                description: 'Timekeeping and fashion accessory'
+            },
+            'hat': {
+                brands: ['New Era', 'Nike', 'Adidas', 'The North Face'],
+                priceRange: [19, 99],
+                description: 'Headwear for style and protection'
+            },
+            'bottle': {
+                brands: ['Hydro Flask', 'Yeti', 'CamelBak', 'Nalgene'],
+                priceRange: [15, 49],
+                description: 'Reusable water container'
+            },
+            'book': {
+                brands: ['Penguin', 'HarperCollins', 'Random House', 'Simon & Schuster'],
+                priceRange: [9, 39],
+                description: 'Printed reading material'
+            }
+        };
+
+        // Configuration constants
+        const CONFIG = {
+            CONFIDENCE_THRESHOLD: 0.6,
+            MAX_DETECTIONS: 20,
+            CANVAS_SIZE: { width: 640, height: 480 }
+        };
+
+        // Utility functions
+        const getRandomPrice = (min, max) => {
+            return Math.floor(Math.random() * (max - min + 1)) + min;
+        };
+
+        const getRandomBrand = (brands) => {
+            return brands[Math.floor(Math.random() * brands.length)];
+        };
+
+        const generateProductInfo = (className) => {
+            const productInfo = PRODUCT_DATABASE[className];
+            if (!productInfo) return { brand: 'Unknown', price: 'N/A', description: 'Unknown product' };
+            
+            const brand = getRandomBrand(productInfo.brands);
+            const price = getRandomPrice(productInfo.priceRange[0], productInfo.priceRange[1]);
+            
+            return { 
+                brand, 
+                price: price > 0 ? `$${price.toLocaleString()}` : 'Priceless',
+                description: productInfo.description
+            };
+        };
+
+        // Model loading and initialization
+        const initializeApp = async () => {
+            try {
+                // Initialize TensorFlow.js backend
+                await tf.ready();
+                await tf.setBackend('webgl');
+                
+                // Load COCO-SSD model
+                console.log('Loading COCO-SSD model...');
+                model = await cocoSsd.load({
+                    base: 'lite_mobilenet_v2'
+                });
+                console.log('Model loaded successfully');
+                
+                // Initialize camera
+                await setupCamera();
+                setupCanvas();
+                
+                // Start detection
+                startDetection();
+                
+            } catch (error) {
+                console.error('Initialization failed:', error);
+                alert('Failed to initialize. Please check your internet connection and refresh the page.');
+            }
+        };
+
+        // Camera setup
+        const setupCamera = async () => {
+            video = document.getElementById('webcam');
+            
+            try {
+                stream = await navigator.mediaDevices.getUserMedia({
+                    video: { 
+                        width: 640, 
+                        height: 480,
+                        facingMode: currentFacingMode
+                    }
+                });
+                
+                video.srcObject = stream;
+                
+                return new Promise((resolve) => {
+                    video.onloadedmetadata = () => {
+                        video.play();
+                        resolve();
+                    };
+                });
+            } catch (error) {
+                console.error('Camera access failed:', error);
+                document.getElementById('error-modal').classList.remove('hidden');
+                throw error;
+            }
+        };
+
+        // Canvas setup for drawing detections
+        const setupCanvas = () => {
+            canvas = document.getElementById('detection-canvas');
+            ctx = canvas.getContext('2d');
+            
+            // Set canvas size to match video
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+        };
+
+        // Main detection loop
+        const detectObjects = async () => {
+            if (!model || !video || !video.readyState === 4) return;
+            
+            const now = performance.now();
+            const elapsed = now - lastFrameTime;
+            lastFrameTime = now;
+            
+            // Calculate FPS
+            fps = Math.round(1000 / elapsed);
+            document.getElementById('fps-counter').textContent = `FPS: ${fps}`;
+            
+            try {
+                // Run detection
+                detections = await model.detect(video);
+                
+                // Filter detections by confidence
+                detections = detections.filter(detection => 
+                    detection.score > CONFIG.CONFIDENCE_THRESHOLD
+                ).slice(0, CONFIG.MAX_DETECTIONS);
+                
+                // Draw detections
+                drawDetections();
+                
+            } catch (error) {
+                console.error('Detection error:', error);
+            }
+            
+            // Continue detection loop
+            animationId = requestAnimationFrame(detectObjects);
+        };
+
+        // Draw bounding boxes and labels
+        const drawDetections = () => {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            detections.forEach(detection => {
+                const { class: className, score, bbox } = detection;
+                const category = CATEGORY_MAPPING[className] || 'unknown';
+                const productInfo = generateProductInfo(className);
+                
+                // Draw bounding box
+                ctx.strokeStyle = getCategoryColor(category);
+                ctx.fillStyle = getCategoryColor(category, 0.2);
+                ctx.lineWidth = 2;
+                
+                // Rounded corners for bounding box
+                const radius = 12;
+                ctx.beginPath();
+                ctx.moveTo(bbox[0] + radius, bbox[1]);
+                ctx.lineTo(bbox[0] + bbox[2] - radius, bbox[1]);
+                ctx.quadraticCurveTo(bbox[0] + bbox[2], bbox[1], bbox[0] + bbox[2], bbox[1] + radius);
+                ctx.lineTo(bbox[0] + bbox[2], bbox[1] + bbox[3] - radius);
+                ctx.quadraticCurveTo(bbox[0] + bbox[2], bbox[1] + bbox[3], bbox[0] + bbox[2] - radius, bbox[1] + bbox[3]);
+                ctx.lineTo(bbox[0] + radius, bbox[1] + bbox[3]);
+                ctx.quadraticCurveTo(bbox[0], bbox[1] + bbox[3], bbox[0], bbox[1] + bbox[3] - radius);
+                ctx.lineTo(bbox[0], bbox[1] + radius);
+                ctx.quadraticCurveTo(bbox[0], bbox[1], bbox[0] + radius, bbox[1]);
+                ctx.closePath();
+                ctx.fill();
+                ctx.stroke();
+                
+                // Draw label background
+                const label = `${productInfo.brand} ${className} | ${productInfo.price}`;
+                const description = productInfo.description;
+                ctx.font = '14px SF Pro Display, -apple-system, BlinkMacSystemFont, sans-serif';
+                const labelWidth = Math.max(
+                    ctx.measureText(label).width,
+                    ctx.measureText(description).width
+                ) + 20;
+                
+                // Rounded corners for label background
+                ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+                ctx.beginPath();
+                ctx.moveTo(bbox[0] + radius, bbox[1] - 50);
+                ctx.lineTo(bbox[0] + labelWidth - radius, bbox[1] - 50);
+                ctx.quadraticCurveTo(bbox[0] + labelWidth, bbox[1] - 50, bbox[0] + labelWidth, bbox[1] - 50 + radius);
+                ctx.lineTo(bbox[0] + labelWidth, bbox[1] - 5);
+                ctx.quadraticCurveTo(bbox[0] + labelWidth, bbox[1] - 5, bbox[0] + labelWidth - radius, bbox[1] - 5);
+                ctx.lineTo(bbox[0] + radius, bbox[1] - 5);
+                ctx.quadraticCurveTo(bbox[0], bbox[1] - 5, bbox[0], bbox[1] - 5 - radius);
+                ctx.lineTo(bbox[0], bbox[1] - 50 + radius);
+                ctx.quadraticCurveTo(bbox[0], bbox[1] - 50, bbox[0] + radius, bbox[1] - 50);
+                ctx.closePath();
+                ctx.fill();
+                
+                // Draw label text
+                ctx.fillStyle = 'white';
+                ctx.fillText(label, bbox[0] + 10, bbox[1] - 35);
+                ctx.font = '12px SF Pro Display, -apple-system, BlinkMacSystemFont, sans-serif';
+                ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
+                ctx.fillText(description, bbox[0] + 10, bbox[1] - 15);
+            });
+        };
+
+        // Get category-specific colors
+        const getCategoryColor = (category, alpha = 1) => {
+            const colors = {
+                person: `rgba(0, 122, 255, ${alpha})`,      // Apple Blue
+                car: `rgba(255, 59, 48, ${alpha})`,         // Apple Red
+                shoe: `rgba(52, 199, 89, ${alpha})`,        // Apple Green
+                electronics: `rgba(175, 82, 222, ${alpha})`, // Apple Purple
+                accessories: `rgba(255, 204, 0, ${alpha})`,  // Apple Yellow
+                container: `rgba(90, 200, 250, ${alpha})`,   // Apple Light Blue
+                unknown: `rgba(142, 142, 147, ${alpha})`     // Apple Gray
+            };
+            
+            return colors[category] || colors.unknown;
+        };
+
+        // Share functionality
+        const shareDetections = () => {
+            if (detections.length === 0) {
+                showToast('No items detected to share!');
+                return;
+            }
+            
+            const itemList = detections.map(d => 
+                `${d.productInfo.brand} ${d.className} (${d.productInfo.price})`
+            ).join(', ');
+            
+            const shareText = `My detected items: ${itemList} #AIDetection #SightIQ`;
+            
+            navigator.clipboard.writeText(shareText).then(() => {
+                showToast('Items copied to clipboard!');
+            }).catch(() => {
+                showToast('Failed to copy to clipboard');
+            });
+        };
+
+        // Toast notification
+        const showToast = (message) => {
+            const toast = document.getElementById('toast');
+            toast.textContent = message;
+            toast.classList.remove('hidden');
+            
+            setTimeout(() => {
+                toast.classList.add('hidden');
+            }, 3000);
+        };
+
+        // Start detection when everything is ready
+        const startDetection = () => {
+            if (animationId) {
+                cancelAnimationFrame(animationId);
+            }
+            detectObjects();
+        };
+
+        // Add camera switching function
+        const switchCamera = async () => {
+            try {
+                // Pause detection temporarily
+                if (animationId) {
+                    cancelAnimationFrame(animationId);
+                }
+
+                // Stop current stream
+                if (stream) {
+                    stream.getTracks().forEach(track => track.stop());
+                }
+
+                // Switch facing mode
+                currentFacingMode = currentFacingMode === 'user' ? 'environment' : 'user';
+                
+                // Update button text
+                document.getElementById('camera-mode').textContent = 
+                    currentFacingMode === 'user' ? 'Front Camera' : 'Back Camera';
+
+                // Get new stream
+                stream = await navigator.mediaDevices.getUserMedia({
+                    video: { 
+                        width: 640, 
+                        height: 480,
+                        facingMode: currentFacingMode
+                    }
+                });
+
+                // Update video source
+                video.srcObject = stream;
+                
+                // Wait for video to be ready
+                await new Promise((resolve) => {
+                    video.onloadedmetadata = () => {
+                        video.play();
+                        resolve();
+                    };
+                });
+
+                // Update canvas size
+                setupCanvas();
+
+                // Resume detection
+                startDetection();
+
+            } catch (error) {
+                console.error('Error switching camera:', error);
+                alert('Failed to switch camera. Please try again.');
+                // Try to resume detection even if camera switch fails
+                startDetection();
+            }
+        };
+
+        // Initialize app when page loads
+        document.addEventListener('DOMContentLoaded', () => {
+            initializeApp();
+        });
+
+        // Cleanup on page unload
+        window.addEventListener('beforeunload', () => {
+            if (animationId) {
+                cancelAnimationFrame(animationId);
+            }
+            if (stream) {
+                stream.getTracks().forEach(track => track.stop());
+            }
+        });
+    </script>
+</body>
+</html> 
